@@ -1,5 +1,5 @@
 /**
- * Hermes Movie v12 — полноценный поиск с выбором источника и воспроизведением
+ * Hermes Movie v13 — поиск без парсинга страниц (CORS на ТВ блокирует)
  * Установка: https://asimut.github.io/l/b.js
  */
 (function(){
@@ -15,10 +15,9 @@ var SOURCES = [
     {id:'uafilm',  name:'UAFilm',   url:'https://uafilm.tv',   search:'/index.php?do=search',            type:'html'}
 ];
 
-// --- HTTP ---
 function get(url, cb){
     var x = new XMLHttpRequest();
-    x.timeout = 15000;
+    x.timeout = 8000;
     x.open('GET', url, true);
     x.onload  = function(){ cb(null, x.responseText); };
     x.onerror = function(){ cb('err'); };
@@ -28,7 +27,7 @@ function get(url, cb){
 
 function post(url, body, cb){
     var x = new XMLHttpRequest();
-    x.timeout = 15000;
+    x.timeout = 8000;
     x.open('POST', url, true);
     x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
     x.onload  = function(){ cb(null, x.responseText); };
@@ -37,51 +36,7 @@ function post(url, body, cb){
     x.send(body);
 }
 
-// --- Парсер страницы фильма (ищем ссылки на видео) ---
-function extractVideoUrls(html, baseUrl){
-    var urls = [];
-    // Ищем прямые ссылки на видео
-    var patterns = [
-        /(https?:\/\/[^"'\s]+\.(?:mp4|m3u8|mkv|webm|avi)[^"'\s]*)/gi,
-        /(https?:\/\/[^"'\s]*\/embed\/[^"'\s]*)/gi,
-        /src=["'](https?:\/\/[^"']*(?:video|player|stream|play)[^"']*)["']/gi,
-        /<iframe[^>]+src=["']([^"']+)["']/gi
-    ];
-    for (var p = 0; p < patterns.length; p++) {
-        var m;
-        while ((m = patterns[p].exec(html)) !== null) {
-            var u = m[1];
-            if (u.indexOf('http') === 0 && urls.indexOf(u) < 0) urls.push(u);
-        }
-    }
-    return urls;
-}
-
-// --- Поиск в источнике ---
-function searchSource(src, query, cb){
-    if (src.type === 'rezka') {
-        post(src.url + src.search, 'q=' + encodeURIComponent(query), function(err, data){
-            if (err || !data) { cb([]); return; }
-            cb(parseRezka(data, src.url));
-        });
-    } else if (src.type === 'json') {
-        var url = src.url + src.search;
-        url += (url.indexOf('?') >= 0 ? '&' : '?') + 'q=' + encodeURIComponent(query);
-        get(url, function(err, data){
-            if (err || !data) { cb([]); return; }
-            cb(parseJSON(data, src.url));
-        });
-    } else {
-        var url2 = src.url + src.search;
-        url2 += (url2.indexOf('?') >= 0 ? '&' : '?') + 'do=search&subaction=search&story=' + encodeURIComponent(query);
-        get(url2, function(err, data){
-            if (err || !data) { cb([]); return; }
-            cb(parseHTML(data, src.url));
-        });
-    }
-}
-
-function parseJSON(text, baseUrl){
+function parseResults(text, src){
     try {
         var d = JSON.parse(text);
         var items = d.data || d.results || d.items || d.rows || d;
@@ -93,60 +48,53 @@ function parseJSON(text, baseUrl){
         }
         if (!(items instanceof Array)) return [];
         var out = [];
-        for (var i = 0; i < items.length && i < 15; i++) {
+        for (var i = 0; i < items.length && i < 10; i++) {
             var it = items[i];
             out.push({
                 title: it.title || it.name || '',
-                url: it.url || it.link || (baseUrl + '/film/' + (it.id || it.slug || '')),
-                year: it.year || ''
+                url: it.url || it.link || (src.url + '/' + (it.id || it.slug || '')),
+                source: src.name
             });
         }
         return out;
     } catch(e) { return []; }
 }
 
-function parseHTML(text, baseUrl){
+function parseHTML(text, src){
     var re = /<a[^>]+href=["']([^"']+)["'][^>]*>([^<]{3,120})<\/a>/gi;
     var m, seen = {}, out = [];
-    while ((m = re.exec(text)) !== null && out.length < 15) {
+    while ((m = re.exec(text)) !== null && out.length < 10) {
         var t = m[2].replace(/<[^>]+>/g, '').trim();
-        if (t.length > 2 && !seen[t]) {
-            seen[t] = 1;
-            var href = m[1];
-            if (href.indexOf('http') !== 0) href = baseUrl.replace(/\/$/, '') + (href.indexOf('/') === 0 ? '' : '/') + href;
-            out.push({title: t, url: href, year: ''});
-        }
-    }
-    return out;
-}
-
-function parseRezka(text, baseUrl){
-    // Rezka возвращает HTML
-    var out = [];
-    var re = /<a[^>]+href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/gi;
-    var m, seen = {};
-    while ((m = re.exec(text)) !== null && out.length < 15) {
-        var t = m[2].trim();
         if (t.length > 3 && !seen[t]) {
             seen[t] = 1;
             var href = m[1];
-            if (href.indexOf('http') !== 0) href = baseUrl + href;
-            out.push({title: t, url: href, year: ''});
+            if (href.indexOf('http') !== 0) href = src.url.replace(/\/$/, '') + '/' + href.replace(/^\//, '');
+            out.push({title: t, url: href, source: src.name});
         }
     }
     return out;
 }
 
-// --- Открыть страницу фильма и найти видео ---
-function openMovie(url, title, cb){
-    get(url, function(err, html){
-        if (err || !html) { cb([]); return; }
-        var videos = extractVideoUrls(html, url);
-        cb(videos);
-    });
+function searchOne(src, query, cb){
+    if (src.type === 'rezka') {
+        post(src.url + src.search, 'q=' + encodeURIComponent(query), function(err, data){
+            if (err || !data) { cb(null, 'Ошибка сети'); return; }
+            var r = parseResults(data, src);
+            if (r.length === 0) r = parseHTML(data, src);
+            cb(r, null);
+        });
+    } else {
+        var url = src.url + src.search;
+        url += (url.indexOf('?') >= 0 ? '&' : '?') + 'q=' + encodeURIComponent(query);
+        get(url, function(err, data){
+            if (err || !data) { cb(null, 'Ошибка сети'); return; }
+            if (src.type === 'json') cb(parseResults(data, src), null);
+            else cb(parseHTML(data, src), null);
+        });
+    }
 }
 
-// ═══ КНОПКА ═══
+// ═══ UI ═══
 function addButton(render, movie){
     try {
         if (!render) return;
@@ -157,79 +105,99 @@ function addButton(render, movie){
         btn.on('hover:enter', function(){
             try {
                 var title = movie ? (movie.title || movie.original_title || movie.name || '') : '';
-                if (!title) { Lampa.Noty.show('Название не найдено'); return; }
+                if (!title) { Lampa.Noty.show('Нет названия'); return; }
 
-                // Шаг 1: показываем список источников
+                // Шаг 1: список источников
                 var srcItems = [];
                 for (var i = 0; i < SOURCES.length; i++) {
-                    srcItems.push({title: SOURCES[i].name, source: SOURCES[i]});
+                    srcItems.push({title: SOURCES[i].name, src: SOURCES[i]});
                 }
+                srcItems.push({title: '🔍 Искать везде', src: null});
 
                 Lampa.Select.show({
-                    title: 'Выбери источник: ' + title,
+                    title: 'Hermes: ' + title,
                     items: srcItems,
                     onSelect: function(sel){
                         Lampa.Select.close();
-                        Lampa.Noty.show('Поиск в ' + sel.source.name + '...');
-
-                        // Шаг 2: поиск в выбранном источнике
-                        searchSource(sel.source, title, function(results){
-                            if (!results || results.length === 0) {
-                                Lampa.Noty.show('Ничего не найдено в ' + sel.source.name);
+                        if (!sel.src) {
+                            // Искать везде
+                            searchAll(title);
+                            return;
+                        }
+                        // Искать в одном источнике
+                        Lampa.Noty.show(sel.src.name + ': поиск...');
+                        searchOne(sel.src, title, function(results, err){
+                            if (err || !results || results.length === 0) {
+                                Lampa.Noty.show(sel.src.name + ': ничего не найдено');
                                 return;
                             }
-                            // Шаг 3: показываем результаты
-                            var items = [];
-                            for (var i = 0; i < results.length; i++) {
-                                items.push({
-                                    title: results[i].title + (results[i].year ? ' (' + results[i].year + ')' : ''),
-                                    url: results[i].url,
-                                    sourceName: sel.source.name
-                                });
-                            }
-
-                            Lampa.Select.show({
-                                title: sel.source.name + ': ' + title,
-                                items: items,
-                                onSelect: function(item){
-                                    Lampa.Select.close();
-                                    Lampa.Noty.show('Загружаю: ' + item.title + '...');
-
-                                    // Шаг 4: открываем страницу, ищем видео
-                                    openMovie(item.url, item.title, function(videos){
-                                        if (!videos || videos.length === 0) {
-                                            // Если видео не найдено — пробуем открыть в браузере
-                                            Lampa.Noty.show('Нет прямых ссылок. Открываю сайт...');
-                                            try { window.open(item.url, '_blank'); } catch(e) {}
-                                            return;
-                                        }
-                                        // Шаг 5: показываем найденные видео
-                                        var vidItems = [];
-                                        for (var i = 0; i < videos.length; i++) {
-                                            vidItems.push({title: 'Видео ' + (i+1), url: videos[i]});
-                                        }
-                                        Lampa.Select.show({
-                                            title: 'Видео: ' + item.title,
-                                            items: vidItems,
-                                            onSelect: function(vid){
-                                                Lampa.Select.close();
-                                                // Запускаем в плеере Lampa
-                                                Lampa.Player.play({url: vid.url, title: item.title});
-                                            }
-                                        });
-                                    });
-                                }
-                            });
+                            showResults(results, sel.src.name + ': ' + title);
                         });
                     }
                 });
             } catch(e) {
-                Lampa.Noty.show('Ошибка: ' + (e.message || e));
+                Lampa.Noty.show('Ошибка: ' + (e.message || ''));
             }
         });
 
         render.after(btn);
     } catch(e) {}
+}
+
+function searchAll(title){
+    var srcResults = [];
+    var done = 0, total = SOURCES.length;
+
+    for (var i = 0; i < total; i++) {
+        searchOne(SOURCES[i], title, function(results, err){
+            done++;
+            if (results && results.length) {
+                srcResults.push({source: results[0].source, count: results.length, results: results});
+            }
+            if (done >= total) {
+                if (srcResults.length === 0) {
+                    Lampa.Noty.show('Ничего не найдено');
+                    return;
+                }
+                // Группируем по источникам
+                var items = [];
+                for (var j = 0; j < srcResults.length; j++) {
+                    var sr = srcResults[j];
+                    for (var k = 0; k < sr.results.length; k++) {
+                        items.push({
+                            title: '[' + sr.source + '] ' + sr.results[k].title,
+                            url: sr.results[k].url
+                        });
+                    }
+                }
+                showResults(items, 'Везде: ' + title);
+            }
+        });
+    }
+}
+
+function showResults(items, theTitle){
+    if (!items || items.length === 0) {
+        Lampa.Noty.show('Ничего не найдено');
+        return;
+    }
+    Lampa.Select.show({
+        title: theTitle + ' (' + items.length + ')',
+        items: items,
+        onSelect: function(item){
+            Lampa.Select.close();
+            if (item.url) {
+                // Пробуем открыть в плеере если прямая ссылка на видео
+                if (/\.(mp4|m3u8|mkv|webm)(\?|$)/i.test(item.url)) {
+                    Lampa.Player.play({url: item.url, title: item.title});
+                } else {
+                    // Иначе открываем сайт
+                    Lampa.Noty.show('Открываю: ' + item.title);
+                    try { window.open(item.url, '_blank'); } catch(e) {}
+                }
+            }
+        }
+    });
 }
 
 // ═══ СЛУШАТЕЛЬ ═══
@@ -250,6 +218,6 @@ Lampa.Listener.follow('full', function(e){
     } catch(e) {}
 });
 
-Lampa.Noty.show('✅ Hermes v12 загружен!');
+Lampa.Noty.show('✅ Hermes v13 загружен!');
 
 })();
