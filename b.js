@@ -1,10 +1,11 @@
 /**
- * Hermes Movie v6 — плагин поиска фильмов для Lampa
- * Установка: https://asimut.github.io/l/b.js  (GitHub Pages, НЕ raw!)
+ * Hermes Movie v7 — плагин по аналогии с z01.online/live
+ * Установка: https://asimut.github.io/l/b.js
  */
 (function(){
 'use strict';
 
+// --- Источники ---
 var SOURCES = [
     {id:'rezka',   name:'HDRezka',  url:'https://hdrezka.ag',  search:'/engine/ajax/search.php',        type:'rezka'},
     {id:'filmix',  name:'Filmix',   url:'https://filmix.ac',   search:'/api/v2/search',                 type:'json'},
@@ -13,12 +14,10 @@ var SOURCES = [
     {id:'uakino',  name:'UAKino',   url:'https://uakino.me',   search:'/index.php?do=search',            type:'html'},
     {id:'uafix',   name:'UAFix',    url:'https://uafix.net',   search:'/api/v1/search',                 type:'json'},
     {id:'eneyida', name:'Eneyida',  url:'https://eneyida.tv',  search:'/index.php?do=search',            type:'html'},
-    {id:'uafilm',  name:'UAFilm',   url:'https://uafilm.tv',   search:'/index.php?do=search',            type:'html'},
-    {id:'kinobase',name:'KinoBase', url:'https://kinobase.org',search:'/search',                         type:'html'},
-    {id:'videocdn',name:'VideoCDN', url:'https://videocdn.tv', search:'/api/short',                     type:'json'}
+    {id:'uafilm',  name:'UAFilm',   url:'https://uafilm.tv',   search:'/index.php?do=search',            type:'html'}
 ];
 
-// --- HTTP ---
+// --- HTTP (XMLHttpRequest, ES5) ---
 function get(url, cb){
     var x = new XMLHttpRequest();
     x.timeout = 10000;
@@ -92,7 +91,6 @@ function parseRezka(text, baseUrl){
     return out.length > 0 ? out : parseHTML(text, baseUrl);
 }
 
-// --- Поиск ---
 function searchSource(src, query, cb){
     var url, isPost = false, body;
     if (src.type === 'rezka') {
@@ -131,67 +129,7 @@ function searchAll(query, cb){
     }
 }
 
-// --- UI ---
-function addSearchButton(movieTitle){
-    // Ищем контейнер — разные версии Lampa
-    var container = document.querySelector('.full-start__buttons, .full__buttons, .movie__buttons, .view--full .button.selector');
-    if (!container) {
-        setTimeout(function(){ addSearchButton(movieTitle); }, 500);
-        return;
-    }
-    if (document.querySelector('.hm-search-btn')) return;
-
-    var btn = document.createElement('div');
-    btn.className = 'button hm-search-btn';
-    btn.textContent = '🔍 Поиск (Hermes)';
-    btn.setAttribute('data-background', '#764ba2');
-    btn.style.cssText = 'background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;margin:5px;padding:10px 15px;border-radius:8px;text-align:center;font-weight:bold;cursor:pointer;';
-
-    // Lampa использует jQuery-подобные события через свою систему
-    if (typeof $ !== 'undefined') {
-        $(btn).on('hover:enter', function(){
-            Lampa.Noty.show('Ищу: ' + movieTitle + '...');
-            Lampa.Loading.start();
-            searchAll(movieTitle, function(results){
-                Lampa.Loading.stop();
-                if (results.length === 0) {
-                    Lampa.Noty.show('Ничего не найдено');
-                    return;
-                }
-                var items = [];
-                for (var i = 0; i < results.length; i++) {
-                    items.push({
-                        title: results[i].title + (results[i].year ? ' (' + results[i].year + ')' : ''),
-                        url: results[i].url
-                    });
-                }
-                Lampa.Select.show({
-                    title: 'Hermes: ' + movieTitle + ' (' + items.length + ')',
-                    items: items,
-                    onSelect: function(item){
-                        if (item.url) {
-                            Lampa.Controls.open(item.url);
-                        }
-                    }
-                });
-            });
-        });
-    } else {
-        // Fallback: обычный onclick
-        btn.addEventListener('click', function(){
-            Lampa.Noty.show('Ищу: ' + movieTitle + '...');
-            Lampa.Loading.start();
-            searchAll(movieTitle, function(results){
-                Lampa.Loading.stop();
-                showResultsFallback(results, movieTitle);
-            });
-        });
-    }
-
-    container.appendChild(btn);
-}
-
-function showResultsFallback(results, movieTitle){
+function showResults(results, movieTitle){
     if (results.length === 0) {
         Lampa.Noty.show('Ничего не найдено');
         return;
@@ -212,48 +150,56 @@ function showResultsFallback(results, movieTitle){
     });
 }
 
-// --- Инициализация ---
-function getMovieTitle(){
-    var el = document.querySelector('.full__title, .movie__title, h1, .full-start__title, .entity__title');
-    return el ? el.textContent.trim() : '';
+// ═══ КНОПКА — по аналогии с z01 ═══
+// Шаблон кнопки (как у z01 — класс full-start__button selector)
+var BUTTON_HTML = '<div class="full-start__button selector hermes-btn" style="background:linear-gradient(135deg,#667eea,#764ba2)">' +
+    '<svg width="100" height="100" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="42" stroke="#fff" stroke-width="8" fill="none"/><path d="M35 25 L75 50 L35 75 Z" fill="#fff"/></svg>' +
+    '<span>Hermes</span></div>';
+
+function addButton(e){
+    // z01: e.render.find('.lampac--button').length → проверяем, не добавлена ли уже
+    if (e.render.find('.hermes-btn').length) return;
+
+    var btn = $(BUTTON_HTML);
+
+    btn.on('hover:enter', function(){
+        var title = e.movie.title || e.movie.original_title || e.movie.name || '';
+        if (!title) { Lampa.Noty.show('Название не найдено'); return; }
+
+        Lampa.Noty.show('Ищу: ' + title + '...');
+        Lampa.Loading.start();
+
+        searchAll(title, function(results){
+            Lampa.Loading.stop();
+            showResults(results, title);
+        });
+    });
+
+    // z01: e.render.after(btn) — добавляем ПОСЛЕ torrent-view
+    e.render.after(btn);
 }
 
-function init(){
-    // Уведомление о загрузке
-    if (typeof Lampa !== 'undefined' && Lampa.Noty) {
-        Lampa.Noty.show('✅ Hermes Movie v6 загружен!', 2500);
-    }
-
-    // Слушаем открытие страницы фильма
-    if (typeof Lampa !== 'undefined' && Lampa.Listener) {
-        Lampa.Listener.follow('full', function(e){
-            if (e.type !== 'complite') return;
-            setTimeout(function(){
-                var title = getMovieTitle();
-                if (title) addSearchButton(title);
-            }, 800);
+// ═══ ИНИЦИАЛИЗАЦИЯ — точь-в-точь как z01 ═══
+Lampa.Listener.follow('full', function(e){
+    if (e.type === 'complite') {
+        addButton({
+            render: e.object.activity.render().find('.view--torrent'),
+            movie: e.data.movie
         });
     }
-}
+});
 
-// Старт
-if (window.appready) {
-    init();
-} else if (typeof Lampa !== 'undefined' && Lampa.Listener) {
-    Lampa.Listener.follow('app', function(e){
-        if (e.type === 'ready') init();
-    });
-} else {
-    var tries = 0;
-    var iv = setInterval(function(){
-        tries++;
-        if (window.appready || (typeof Lampa !== 'undefined' && Lampa.Listener)) {
-            clearInterval(iv);
-            init();
-        } else if (tries > 30) {
-            clearInterval(iv);
-        }
-    }, 1000);
-}
+// Если уже на странице фильма
+try {
+    if (Lampa.Activity.active().component === 'full') {
+        addButton({
+            render: Lampa.Activity.active().activity.render().find('.view--torrent'),
+            movie: Lampa.Activity.active().card
+        });
+    }
+} catch(e) {}
+
+// Уведомление о загрузке
+Lampa.Noty.show('✅ Hermes Movie v7 загружен!', 2500);
 
 })();
